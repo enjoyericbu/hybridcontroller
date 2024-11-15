@@ -1,0 +1,6 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 1000  # Hz
+
+    hybrid_controller_naive_2: #name of the cpp, hpp ......
+      type: hybrid_control_naive_2/HybridController #namespace/controllername

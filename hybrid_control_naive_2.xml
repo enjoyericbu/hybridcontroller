@@ -1,0 +1,8 @@
+<library path="hybrid_control_naive_2">
+    <class name="hybrid_control_naive_2/HybridController"
+           type="hybrid_control_naive_2::HybridController" base_class_type="controller_interface::ControllerInterface">
+        <description>
+            The cartesian imedance controller uses cartesian impedance control to bring the Robot to a desired position and orientation.
+        </description>
+    </class>
+</library>
