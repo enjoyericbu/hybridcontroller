@@ -65,10 +65,14 @@ void HybridController::update_environmental_stiffness(){ //calculation the envir
         }
 
         else if(k_e[counter_] <= k_e_adm){
-            n = 99; // 1 * 100 ms
+            n = 1; 
+        }
+
+        else if (k_e[counter_] >= k_e_imp){
+            n = 0;
         }
         else {
-            n = 99 * (k_e_imp - k_e[counter_])/(k_e_imp - k_e_adm);
+            n = 1 * (k_e_imp - k_e[counter_])/(k_e_imp - k_e_adm);
         }
     }
 
@@ -249,6 +253,8 @@ CallbackReturn HybridController::on_activate(
   orientation_d_ = Eigen::Quaterniond(initial_transform.rotation());
    //for admittance control
   x_d_orientation_quat.coeffs() << orientation_d_.coeffs();
+
+  x_d.head(3) << position_d_;
   x_d.tail(3) << x_d_orientation_quat.toRotationMatrix().eulerAngles(0, 1, 2);
   std::cout << "position_d, orientation_d, on_activate is: " << position_d_.transpose() << " " << initial_transform.rotation().eulerAngles(0, 1, 2).transpose() <<  std::endl;    // Debugging
   std::cout << "position_d_target on activation is: " << position_d_target_.transpose() <<  std::endl;    // Debugging
@@ -327,7 +333,7 @@ controller_interface::return_type HybridController::update(const rclcpp::Time& /
   //   std::cin >> mode_;
   // }
   // }
-  w = jacobian * dq_;//from adm, velocity
+
 
 
   std::array<double, 49> mass = franka_robot_model_->getMassMatrix(); //M(q)
@@ -338,6 +344,7 @@ controller_interface::return_type HybridController::update(const rclcpp::Time& /
   Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
   Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
   Eigen::Map<Eigen::Matrix<double, 7, 7>> M(mass.data());
+  
   Eigen::Affine3d transform(Eigen::Matrix4d::Map(pose.data()));
   Eigen::Vector3d position(transform.translation());
   Eigen::Quaterniond orientation(transform.rotation());
@@ -346,23 +353,21 @@ controller_interface::return_type HybridController::update(const rclcpp::Time& /
                         * Eigen::AngleAxisd(rotation_d_target_[2], Eigen::Vector3d::UnitZ());
   updateJointStates(); 
 
- Eigen::Matrix<double, 6, 1> virtual_error = Eigen::MatrixXd::Zero(6, 1); 
+  
   //std::cout << "Error outer loop is: " << error.transpose() <<  std::endl;
   // Now, align error.tail(3) to use virtual_error like position error
   // You want to use the virtual_error for rotational error (tail):
   // Set current state  
+  Theta = Lambda;
+  D = 2.05* K.cwiseSqrt() * Lambda.diagonal().cwiseSqrt().asDiagonal(); // Admittance control law to compute desired trajectory
+  w = jacobian * dq_; // cartesian velocity
 
   
+
+
   error.head(3) << position - position_d_;   
  
 
-
-  if (orientation_d_.coeffs().dot(orientation.coeffs()) < 0.0) {
-    orientation.coeffs() << -orientation.coeffs();
-  }
-  Eigen::Quaterniond error_quaternion(orientation.inverse() * orientation_d_);
-  error.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
-  error.tail(3) << -transform.rotation() * error.tail(3);
 
   Lambda = (jacobian * M.inverse() * jacobian.transpose()).inverse();
   // Theta = T*Lambda;
@@ -370,9 +375,25 @@ controller_interface::return_type HybridController::update(const rclcpp::Time& /
   //Inertia of the robot
 
    error_pd.head(3) << position -x_d.head(3); //error for pd controller in admittance control
-   error_pd.tail(3) << -transform.rotation() * error.tail(3); //copied froom previous error
+   //copied froom previous error
 
   //calculating the velocity of end effector for the admittance control:
+
+//Force Updates
+F_ext = 0.001 * F_ext + 0.999 * O_F_ext_hat_K_M; // noFiltering
+F_ext.head(3) = -F_ext.head(3);
+
+
+ // Convert x_d.tail(3) (Euler angles) to a quaternion
+ Eigen::Matrix<double, 6, 1> virtual_error = Eigen::MatrixXd::Zero(6, 1);
+  x_d_orientation_quat = Eigen::AngleAxisd(x_d.tail(3)(0), Eigen::Vector3d::UnitX())
+                        * Eigen::AngleAxisd(x_d.tail(3)(1), Eigen::Vector3d::UnitY())
+                        * Eigen::AngleAxisd(x_d.tail(3)(2), Eigen::Vector3d::UnitZ());
+
+
+  if (orientation_d_.coeffs().dot(x_d_orientation_quat.coeffs()) < 0.0) {
+      x_d_orientation_quat.coeffs() << -x_d_orientation_quat.coeffs();
+  }
 
   Eigen::Quaterniond virtual_error_quat = orientation_d_.inverse() * x_d_orientation_quat;
   // Extract the virtual orientation error as a 3D vector (imaginary part for small-angle approximation)
@@ -407,6 +428,15 @@ controller_interface::return_type HybridController::update(const rclcpp::Time& /
   //Convert final x_d_orientation_quat back to Euler angles if needed
   x_d.tail(3) = x_d_orientation_quat.toRotationMatrix().eulerAngles(0, 1, 2);
   x_d.head(3) += x_dot_d.head(3) * dt; 
+  
+  //error_pd.head(3) << position - x_d.head(3);//error for pd controller in admittance control
+  if (x_d_orientation_quat.coeffs().dot(orientation.coeffs()) < 0.0) {
+  orientation.coeffs() << -orientation.coeffs();
+  }
+  Eigen::Quaterniond error_quaternion(orientation.inverse() * x_d_orientation_quat);
+  error_pd.tail(3) << orientation.toRotationMatrix().eulerAngles(0, 1, 2) - x_d.tail(3);//, error_quaternion.y(), error_quaternion.z();
+
+  //error_pd.tail(3) << transform.rotation() * error.tail(3);
 
 
   switch (mode_)
@@ -422,24 +452,55 @@ controller_interface::return_type HybridController::update(const rclcpp::Time& /
         // it's highly possible that the rob cannot follow the desired motion due to frequency.
         //std::cout <<loop_duration_imp<< std::endl;
 
-             
-        if(counter < (99 - n)) { //impedance control 
+
+
+        // for historical reason the f output for impedance and admittance control are called F_impedance
+
+        if(counter < (100 - n * 100)) { //impedance control 
           Theta = Lambda;
-          F_impedance = -1 * (D * (jacobian * dq_) + K * error );
+          F_impedance = -1 * (D * (jacobian * dq_) + K * error ); 
+          error_pd.head(3) = position - (position + 
+              (Kp.inverse() * ((Kd * (jacobian * dq_)) - F_ext)).head(3));  //x-k_d
+          //F_impedance_last = F_impedance;
           ++counter;
         }
-        else if(counter < 99){ //admittance control
-          //F_impedance = - Kp * error - Kd * w; //position controller
-          F_impedance = - Kp * error_pd - Kd * (x_dot_d - w); //position - x_d.head(3)
+
+        /*else if(100 - counter >=5){
+          flag_biginterpolation = 1;
+        }
+
+        else if(flag_biginterpolation == 1 && counter_smooth <= 5){
+          F_impedance_new = - Kp * error_pd - Kd * (x_dot_d - w);
+          double alpha = static_cast<double>(counter_smooth) / 5.0; 
+          F_impedance = (1.0 - alpha) * F_impedance_last + alpha * F_impedance_new;
+          ++counter_smooth;
+          ++counter;
+        } */
+        
+        
+        else if(counter < 100){ //admittance control
+
+
+        
+          //- Kp * error_pd wrong , -Kd * w okay
+        
+          F_impedance = - Kp * error_pd  - Kd * w; //position controller
+          
+          //F_impedance = - Kp * error_pd - Kd * (x_dot_d - w); //position - x_d.head(3)
           //F_impedance = - Kd * (w - x_dot_d);  //velocity control
           //w = jacobian * dq_;
-          //x_dot_d has not been updated in the previous update function!
-          ++counter;         
+          ++counter;
+                 
         }  //unsure if the robot can get the F_inpedance from the while loop
         else{
-          F_impedance = - Kp * error - Kd * w;  
+          //F_impedance = - Kp * error - Kd * w;  
           counter = 0;
+          flag_biginterpolation = 0;
         }
+      
+
+
+
         
     break;
   case 2:
@@ -451,12 +512,14 @@ controller_interface::return_type HybridController::update(const rclcpp::Time& /
     break;
   }
 
-  position_d_target_(1) += 0.00008; // change the reference position
+  //position_d_target_(1) += 0000.1 * cos( 2 * 3.1415926 * 0.0001 * counter);
+  //position_d_target_(2) += 0000.1 * sin( 2 * 3.1415926 * 0.0001 * counter); // change the reference position
 
-  F_ext = 0.9 * F_ext + 0.1 * O_F_ext_hat_K_M; //Filtering 
-  I_F_error += dt * Sf* (F_contact_des - F_ext);
-  F_cmd = Sf*(0.4 * (F_contact_des - F_ext) + 0.9 * I_F_error + 0.9 * F_contact_des);
-
+  //in admittance, F_ext.head(3) = -F_ext.head(3), why?
+ // F_ext = 0.9 * F_ext + 0.1 * O_F_ext_hat_K_M; //Filtering 
+  /*I_F_error += dt * Sf* (F_contact_des - F_ext);
+  F_cmd = Sf*(0.4 * (F_contact_des - F_ext) + 0.9 * I_F_error + 0.9 * F_contact_des);*/
+ //F_cmd in admittance not needed?
   Eigen::VectorXd tau_task(7), tau_nullspace(7), tau_d(7), tau_impedance(7);
   pseudoInverse(jacobian.transpose(), jacobian_transpose_pinv);
 
@@ -465,8 +528,10 @@ controller_interface::return_type HybridController::update(const rclcpp::Time& /
                     (nullspace_stiffness_ * config_control * (q_d_nullspace_ - q_) - //if config_control = true we control the whole robot configuration
                     (2.0 * sqrt(nullspace_stiffness_)) * dq_);  // if config control ) false we don't care about the joint position
 
-  tau_impedance = jacobian.transpose() * Sm * (F_impedance /*+ F_repulsion + F_potential*/) + jacobian.transpose() * Sf * F_cmd;
-  auto tau_d_placeholder = tau_impedance + tau_nullspace + coriolis; //add nullspace and coriolis components to desired torque
+  //calculate_tau_friction();
+  tau_impedance = jacobian.transpose() * Sm * (F_impedance /*+ F_repulsion + F_potential*/)  /* + jacobian.transpose() * Sf * F_cmd*/;
+  auto tau_d_placeholder = tau_impedance + tau_nullspace + coriolis  /*tau_friction*/; //add nullspace and coriolis components to desired torque
+  //friction not needed?
   tau_d << tau_d_placeholder;
   tau_d << saturateTorqueRate(tau_d, tau_J_d_M);  // Saturate torque rate to avoid discontinuities
   tau_J_d_M = tau_d;

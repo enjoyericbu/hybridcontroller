@@ -109,9 +109,11 @@ HybridController();
     void topic_callback_force();
     void topic_callback_position(); //hybrid control
     void reference_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg);
+
  
 
 
+    void calculate_tau_friction();   //friction compensation
 
     void topic_callback(const std::shared_ptr<franka_msgs::msg::FrankaRobotState> msg);
     void updateJointStates();
@@ -265,9 +267,33 @@ HybridController();
 
 
 
+    
+    Eigen::Matrix<double, 7, 1> tau_admittance = Eigen::MatrixXd::Zero(7,1); // admittance torque
+    Eigen::Matrix<double, 7, 1> tau_admittance_filtered = Eigen::MatrixXd::Zero(7,1); // admittance torque filtered
+    Eigen::Matrix<double, 7, 1> tau_friction = Eigen::MatrixXd::Zero(7,1);
+    Eigen::Matrix<double, 7, 1> tau_threshold = Eigen::MatrixXd::Zero(7,1);  //Creating and filtering a "fake" tau_admittance with own weights, optimized for friction compensation
+    bool friction = false; // set if friciton compensation should be turned on
+    Eigen::MatrixXd N; // nullspace projection matrix
 
 
+    // friction compensation observer
+    Eigen::Matrix<double, 7, 1> dz = Eigen::MatrixXd::Zero(7,1);
+    Eigen::Matrix<double, 7, 1> z = Eigen::MatrixXd::Zero(7,1);
+    Eigen::Matrix<double, 7, 1> f = Eigen::MatrixXd::Zero(7,1);
+    Eigen::Matrix<double, 7, 1> g = Eigen::MatrixXd::Zero(7,1);
+    Eigen::Matrix<double, 6,6> K_friction = IDENTITY; //impedance stiffness term for friction compensation
+    Eigen::Matrix<double, 6,6> D_friction = IDENTITY; //impedance damping term for friction compensation
+    const Eigen::Matrix<double, 7, 1> sigma_0 = (Eigen::VectorXd(7) << 76.95, 37.94, 71.07, 44.02, 21.32, 21.83, 53).finished();
+    const Eigen::Matrix<double, 7, 1> sigma_1 = (Eigen::VectorXd(7) << 0.056, 0.06, 0.064, 0.073, 0.1, 0.0755, 0.000678).finished();
+    
+    //friction compensation model paramers (coulomb, viscous, stribeck)
+    Eigen::Matrix<double, 7, 1> dq_s = (Eigen::VectorXd(7) << 0, 0, 0, 0.0001, 0, 0, 0.05).finished();
+    Eigen::Matrix<double, 7, 1> static_friction = (Eigen::VectorXd(7) << 1.025412896, 1.259913793, 0.8380147058, 1.005214968, 1.2928, 0.41525, 0.5341655).finished();
+    Eigen::Matrix<double, 7, 1> offset_friction = (Eigen::VectorXd(7) << -0.05, -0.70, -0.07, -0.13, -0.1025, 0.103, -0.02).finished();
+    Eigen::Matrix<double, 7, 1> coulomb_friction = (Eigen::VectorXd(7) << 1.025412896, 1.259913793, 0.8380147058, 0.96, 1.2928, 0.41525, 0.5341655).finished();
+    Eigen::Matrix<double, 7, 1> beta = (Eigen::VectorXd(7) << 1.18, 0, 0.55, 0.87, 0.935, 0.54, 0.45).finished();//component b of linear friction model (a + b*dq)
 
+ 
 
     double k_e_imp = 4000.0;  
 
@@ -275,8 +301,14 @@ HybridController();
 
     int n = 0;
 
-    size_t counter_ = 0;
-    int counter = 0;
+    size_t counter_ = 0;  //counter for the whole sys， to calculate env stiffness and n
+    int counter = 0; // counter for the update loop
+
+
+    int counter_smooth = 0; // for the smooth change bet. imp and adm
+    Eigen::Matrix<double, 6, 1> F_impedance_last;
+    Eigen::Matrix<double, 6, 1> F_impedance_new;
+    bool flag_biginterpolation = 0;  
 
   
 
