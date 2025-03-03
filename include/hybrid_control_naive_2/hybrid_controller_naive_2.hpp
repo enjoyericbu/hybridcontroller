@@ -25,6 +25,8 @@
 #include <unistd.h>
 #include <thread>
 #include <chrono>      
+#include <vector>
+
 
 #include "hybrid_control_naive_2/user_input_server.hpp"
 
@@ -89,6 +91,7 @@ HybridController();
 
 
     void publishPositionTarget();//for publisher
+    void schmitt_trigger();
 
       
 
@@ -150,30 +153,30 @@ HybridController();
     Eigen::Matrix<double, 6, 6> Lambda = IDENTITY;                                           // operational space mass matrix
     Eigen::Matrix<double, 6, 6> Sm = IDENTITY;                                               // task space selection matrix for positions and rotation
     Eigen::Matrix<double, 6, 6> Sf = Eigen::MatrixXd::Zero(6, 6);                            // task space selection matrix for forces
-    Eigen::Matrix<double, 6, 6> K =  (Eigen::MatrixXd(6,6) << 300,   0,   0,   0,   0,   0,
-                                                                0, 300,   0,   0,   0,   0,
-                                                                0,   0, 300,   0,   0,   0,  // impedance stiffness term
-                                                                0,   0,   0, 50,   0,   0,
-                                                                0,   0,   0,   0, 50,   0,
-                                                                0,   0,   0,   0,   0,  20).finished() ;
+    Eigen::Matrix<double, 6, 6> K =  (Eigen::MatrixXd(6,6) << 250,   0,   0,   0,   0,   0,
+                                                                0, 250,   0,   0,   0,   0,
+                                                                0,   0, 250,   0,   0,   0,  // impedance stiffness term
+                                                                0,   0,   0, 30,   0,   0,
+                                                                0,   0,   0,   0, 30,   0,
+                                                                0,   0,   0,   0,   0,  12).finished() ;
 
-    //Eigen::Matrix<double, 6, 6> D_adm =  Eigen::MatrixXd(6,6) ;// impedance damping term
+    Eigen::Matrix<double, 6, 6> D =  Eigen::MatrixXd(6,6) ;// impedance damping term
 
-    //Eigen::Matrix<double, 6, 6> K_adm =  (Eigen::MatrixXd(6,6) << 250,   0,   0,   0,   0,   0,
-    //                                                            0, 250,   0,   0,   0,   0,
-    //                                                            0,   0, 250,   0,   0,   0,  // impedance stiffness term
-    //                                                            0,   0,   0, 10,   0,   0,
-    //                                                            0,   0,   0,   0, 10,   0,
-    //                                                            0,   0,   0,   0,   0,  8).finished() ;
+    Eigen::Matrix<double, 6, 6> K_imp =  (Eigen::MatrixXd(6,6) << 800,   0,   0,   0,   0,   0,
+                                                                0, 800,   0,   0,   0,   0,
+                                                                0,   0, 800,   0,   0,   0,  // impedance stiffness term
+                                                                0,   0,   0, 80,   0,   0,
+                                                                0,   0,   0,   0, 80,   0,
+                                                                0,   0,   0,   0,   0,  18).finished() ;
 
                                                       
 
-     Eigen::Matrix<double, 6, 6> D =  (Eigen::MatrixXd(6,6) <<  30,   0,   0,   0,   0,   0,
-                                                                 0,  30,   0,   0,   0,   0,
-                                                                 0,   0,  30,   0,   0,   0,  // impedance damping term
-                                                                 0,   0,   0,  18,   0,   0,
-                                                                 0,   0,   0,   0,  18,   0,
-                                                                 0,   0,   0,   0,   0,   9).finished();
+    // Eigen::Matrix<double, 6, 6> D =  (Eigen::MatrixXd(6,6) <<  30,   0,   0,   0,   0,   0,
+    //                                                             0,  30,   0,   0,   0,   0,
+    //                                                             0,   0,  30,   0,   0,   0,  // impedance damping term
+    //                                                             0,   0,   0,  18,   0,   0,
+    //                                                             0,   0,   0,   0,  18,   0,
+    //                                                             0,   0,   0,   0,   0,   9).finished();
     Eigen::Matrix<double, 6, 6> Theta = IDENTITY;
     Eigen::Matrix<double, 6, 6> T = (Eigen::MatrixXd(6,6) <<       10,   0,   0,   0,   0,   0,
                                                                    0,   10,   0,   0,   0,   0,
@@ -214,9 +217,9 @@ HybridController();
     Eigen::Matrix<double, 6, 6> Kd; //  Will be initialized as critically damped  in constructor  
     double elapsed_time = 1;
     double Kp_multiplier = 1;
-    Eigen::Matrix<double, 6, 6> Kp = (Eigen::MatrixXd(6,6) << 2500,   0,   0,   0,   0,   0,
-                                                                0, 2500,   0,   0,   0,   0,
-                                                                0,   0, 2500,   0,   0,   0,  // Inner Position Loop Controller Gains
+    Eigen::Matrix<double, 6, 6> Kp = (Eigen::MatrixXd(6,6) << 2000,   0,   0,   0,   0,   0,
+                                                                0, 2000,   0,   0,   0,   0,
+                                                                0,   0, 2000,   0,   0,   0,  // Inner Position Loop Controller Gains
                                                                 0,   0,   0,  50,   0,   0,
                                                                 0,   0,   0,   0,  50,   0,
                                                                 0,   0,   0,   0,   0,  15).finished();
@@ -253,7 +256,7 @@ HybridController();
 
     //Filter-parameters
     double filter_params_{0.001};
-    int mode_ = 1;
+    int mode_ = 4;
 
 
 
@@ -264,11 +267,12 @@ HybridController();
 
     std::array<double, 2> F_env;
     std::array<double, 2> X_env;
-    std::array<double, 2> k_e_temp;
-    double k_e;
-    double k_e_last;
+
+    std::vector<double> k_e_history = {0.0,0.0,0.0,0.0,0.0};
+    double k_e = 0;
+    
     double max_k_e = 1.5;
-    double delta_k_e;
+    double delta_k_e = 0;
 
     //maybe to replace the current moving average with a more precise one
     //std::vector<double , 5> F_env = {0,0,0,0,0}; 
@@ -307,8 +311,8 @@ HybridController();
 
  
 
-    double k_e_imp = 50.0;  
-    double k_e_adm = 30.0;   
+    double k_e_imp = 0.06;  
+    double k_e_adm = 0.03;   
 
     double n = 0.0;
     double n_current = 0.0;
@@ -341,6 +345,9 @@ HybridController();
     bool smooth_imp_adm;  
     bool smooth_adm_imp;
     bool flag_imp = false;
+
+    
+    bool schmitt_adm = true;
 
   
 
