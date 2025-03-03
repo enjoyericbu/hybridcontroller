@@ -18,6 +18,7 @@
 #include <cmath>
 #include <exception>
 #include <string>
+#include <vector>
 
 #include <iostream>
 #include <fstream> 
@@ -61,26 +62,35 @@ void HybridController::calculating_position_norm() {
 void HybridController::update_environmental_stiffness(){ //calculation the environmental stiffness
         F_env[0] = F_env[1];
         X_env[0] = X_env[1];
-        //k_e_temp[0] = k_e_temp[1];
+        
 
         F_env[1] = F_norm_current;
         X_env[1] = X_norm_current;
         //only a easy moving average
-        //k_e_temp[1] = (F_env[1]  / X_env[1] ) * 0.5 + 0.5 * k_e; 
+        
 
 
         //k_e = (F_env[1] - F_env[0])/(X_env[1] - X_env[0] + 0.001);
         k_e = F_env[1]/ (X_env[1]+ 0.001);
 
-        delta_k_e = k_e - k_e_last;
+        /*delta_k_e = k_e - k_e_last;
         delta_k_e = std::max(-max_k_e, std::min(delta_k_e, max_k_e));
         k_e = k_e_last + delta_k_e;
-        k_e_last = k_e; //avoid great change in k_e
+        k_e_last = k_e; //avoid great change in k_e */
 
-      
+
+        k_e = error.head(3).norm();
+
         if(k_e < 0){
           k_e = -k_e;
         }
+
+        /*k_e_history.insert(k_e_history.begin(),k_e);
+        if(k_e_history.size() > 5){
+          k_e_history.pop_back();
+        }
+        
+        k_e = std::accumulate(k_e_history.begin(), k_e_history.end(), 0.0) / k_e_history.size();*/
         //k_e = F_norm_current / X_norm_current;
 }
 
@@ -110,6 +120,16 @@ void write_to_file(const std::string& filename, double value) { //output n and F
     output_file << value << std::endl;
     output_file.close();
 }
+
+void HybridController::schmitt_trigger(){
+  if(schmitt_adm == true && k_e >= k_e_imp){
+    schmitt_adm = false;
+  }
+  else if(schmitt_adm == false && k_e <= k_e_adm){
+    schmitt_adm = true;
+  }
+}
+
 
   HybridController::HybridController()  { //if error, delete node
 
@@ -358,6 +378,7 @@ controller_interface::return_type HybridController::update(const rclcpp::Time& /
   calculating_position_norm();
   update_environmental_stiffness();
   calculating_n();
+  schmitt_trigger();
 
   Theta = Lambda;
   D = 2.05* K.cwiseSqrt() * Lambda.diagonal().cwiseSqrt().asDiagonal(); // Admittance control law to compute desired trajectory
@@ -459,11 +480,11 @@ if (virtual_error_quat.norm() > 1e-6) {
 
     if(counter < (20 - n_current * 20)) { // Impedance control
 
-      /*if (smooth_adm_imp == 1){
+      if (smooth_adm_imp == 1){
         pos_d_switching.head(3) << position_d_;
         pos_d_switching.tail(3) << orientation_d_.toRotationMatrix().eulerAngles(0, 1, 2);
 
-        pos_switching_imp = K.inverse() * (Kp * error_pd + Kd *w - D*w) + pos_d_switching;
+        /*pos_switching_imp = K.inverse() * (Kp * error_pd + Kd *w - D*w) + pos_d_switching;
         
         error.head(3) << pos_switching_imp.head(3) - position_d_;
         orientation = Eigen::AngleAxisd(pos_switching_imp[4], Eigen::Vector3d::UnitZ()) *
@@ -471,18 +492,20 @@ if (virtual_error_quat.norm() > 1e-6) {
                           Eigen::AngleAxisd(pos_switching_imp[6], Eigen::Vector3d::UnitX());
         Eigen::Quaterniond error_quaternion(orientation.inverse() * orientation_d_);
         error.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
-        error.tail(3) << -transform.rotation() * error.tail(3);
+        error.tail(3) << -transform.rotation() * error.tail(3); */
+
+        error = K.inverse() * (Kp * error_pd + Kd *w_last - D*w_last);
 
 
         //error = Lambda.inverse() * (Kp * error_pd + Kd * w - D * w);
 
         smooth_adm_imp = 0;
-      } */
-      Eigen::Matrix<double, 6, 1> F_impedance_current = -1 * (D * (jacobian * dq_) + K * error);
+      } 
+      Eigen::Matrix<double, 6, 1> F_impedance_current = -1 * (D * (jacobian * dq_) + K /*K_imp*/ * error);
       //F_impedance = (1 - n_current) * F_impedance_current + n_current * F_impedance_last; 
       desired_F = F_impedance_current; //desired_F for controlling the settling time, no impact on output
       //double blend_weight = 0.5 * (1 - cos(n_current * M_PI));
-      double blend_weight = 0.3;
+      double blend_weight = 0.9;
       F_output = blend_weight * F_impedance_current + (1 - blend_weight) * F_last;
       //delta_F_impedance = F_impedance_current - F_impedance_last;
       //delta_F_impedance = delta_F_impedance.cwiseMax(-max_F_impedance).cwiseMin(max_F_impedance);
@@ -499,7 +522,8 @@ if (virtual_error_quat.norm() > 1e-6) {
 
         pos_switching_adm.head(3) << position;
         pos_switching_adm.tail(3) << orientation.toRotationMatrix().eulerAngles(0, 1, 2);
-        x_d = pos_switching_adm - Kp.inverse() * ((D * (jacobian * dq_) + K * error) - Kd * w);
+       
+
         //x - x_d
         /*error_pd.head(3) << position - x_d.head(3);
         Eigen::Quaterniond x_d_quat = Eigen::AngleAxisd(x_d[4], Eigen::Vector3d::UnitZ()) *
@@ -509,8 +533,9 @@ if (virtual_error_quat.norm() > 1e-6) {
         error_pd.tail(3) << error_quaternion_x_d.x(), error_quaternion_x_d.y(), error_quaternion_x_d.z();
         error_pd.tail(3) << -transform.rotation() * error_pd.tail(3); */
 
-        error_pd = Kp.inverse() * (D * w + K * error - Kd * w);
-        x_dot_d =  Kp.inverse() * (D * acceleration + K * error_dot - Kd * w) + w;
+        error_pd = Kp.inverse() * (D * w_last + K /*K_imp*/ * error - Kd * w_last);
+        x_d = pos_switching_adm - error_pd;
+        x_dot_d = -Kp.inverse() * (D * acceleration + K * w_last /*- position_d_, which is 0 in test case*/ - Kd * acceleration) + w;
 
         /*
         pos_switching_adm.head(3) << position;
@@ -527,14 +552,16 @@ if (virtual_error_quat.norm() > 1e-6) {
         virtual_error.head(3) = x_d.head(3) - position_d_;
         */
         //x_dot_d.setZero();//naive Initialization 
-
+       
         smooth_imp_adm = 0;
-       }  
+       }
+         
       
-      Eigen::Matrix<double, 6, 1> F_admittance_current = - Kp * error_pd - Kd * w;
+      Eigen::Matrix<double, 6, 1> F_admittance_current = - Kp * error_pd - Kd * w_last;
+      
       //F_impedance = n_current * F_impedance_current + (1 - n_current) * F_impedance_last;
       desired_F = F_admittance_current;
-      double blend_weight = 0.3;
+      double blend_weight = 0.9;
       F_output = blend_weight * F_admittance_current + (1 - blend_weight) * F_last;
 
     
@@ -556,10 +583,47 @@ if (virtual_error_quat.norm() > 1e-6) {
     
   break;
 
-  case 2:
-    Theta = T*Lambda;
-    F_output = -1*(Lambda * Theta.inverse() - IDENTITY) * F_ext;
-    break;
+  case 2: //schmitt trigger
+
+    if(schmitt_adm == true){
+      Eigen::Matrix<double, 6, 1> F_admittance_current = - Kp * error_pd - Kd * w_last;
+      desired_F = F_admittance_current;
+      double blend_weight = 0.9;
+      F_output = blend_weight * F_admittance_current + (1 - blend_weight) * F_last;
+      F_last = F_output;
+      flag_imp = false;
+    }
+    else{
+      Eigen::Matrix<double, 6, 1> F_impedance_current = -1 * (D * (jacobian * dq_) + K /*K_imp*/ * error);
+      //F_impedance = (1 - n_current) * F_impedance_current + n_current * F_impedance_last; 
+      desired_F = F_impedance_current; //desired_F for controlling the settling time, no impact on output
+      double blend_weight = 0.9;
+      F_output = blend_weight * F_impedance_current + (1 - blend_weight) * F_last;
+      F_last = F_output;
+      flag_imp = true;
+    }
+
+  break;
+
+  case 3:{
+
+      Eigen::Matrix<double, 6, 1> F_impedance_current = -1 * (D * (jacobian * dq_) + K /*K_imp*/ * error); //imp 
+      desired_F = F_impedance_current; //desired_F for controlling the settling time, no impact on output
+      double blend_weight = 0.9;
+      F_output = blend_weight * F_impedance_current + (1 - blend_weight) * F_last;
+      F_last = F_output;
+  }
+  break;
+
+  case 4:
+  {
+      Eigen::Matrix<double, 6, 1> F_admittance_current = - Kp * error_pd - Kd * w; //adm
+      desired_F = F_admittance_current;
+      double blend_weight = 0.9;
+      F_output = blend_weight * F_admittance_current + (1 - blend_weight) * F_last;
+      F_last = F_output;
+  }
+  break;
   
   default:
     break;
@@ -568,9 +632,36 @@ if (virtual_error_quat.norm() > 1e-6) {
    
   write_to_file("ke_data.txt", k_e);
   write_to_file("n.txt", n);
-  write_to_file("output_x", F_output[1]);
-  write_to_file("desired_F_x", desired_F[1]);
-  write_to_file("Flag_imp", flag_imp);
+  write_to_file("output_x.txt", F_output[0]);
+  write_to_file("output_y.txt", F_output[1]);
+  write_to_file("output_z.txt", F_output[2]);
+  //write_to_file("desired_F_x", desired_F[1]);
+  write_to_file("Flag_imp.txt", flag_imp);
+  write_to_file("error_at_x.txt", error[0]);
+  write_to_file("error_at_y.txt", error[1]);
+  write_to_file("error_at_z.txt", error[2]);
+  write_to_file("position_x.txt", position[0]);
+  write_to_file("position_y.txt", position[1]);
+  write_to_file("position_z.txt", position[2]);
+  write_to_file("desired_x.txt", position_d_[0]);
+  write_to_file("desired_y.txt", position_d_[1]);
+  write_to_file("desired_z.txt", position_d_[2]);
+  write_to_file("external_Force_x.txt", O_F_ext_hat_K_M[0]);
+  write_to_file("external_Force_y.txt", O_F_ext_hat_K_M[1]);
+  write_to_file("external_Force_z.txt", O_F_ext_hat_K_M[2]);
+  write_to_file("position_d_target_0_.txt", position_d_target_[0]);
+  write_to_file("error_norm.txt", error.head(3).norm());
+
+
+
+
+
+
+  
+
+ 
+
+
   
 
 
