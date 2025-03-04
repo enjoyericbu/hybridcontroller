@@ -60,7 +60,7 @@ void HybridController::calculating_position_norm() {
 
 
 void HybridController::update_environmental_stiffness(){ //calculation the environmental stiffness
-        F_env[0] = F_env[1];
+        /*F_env[0] = F_env[1];
         X_env[0] = X_env[1];
         
 
@@ -73,10 +73,7 @@ void HybridController::update_environmental_stiffness(){ //calculation the envir
         //k_e = (F_env[1] - F_env[0])/(X_env[1] - X_env[0] + 0.001);
         k_e = F_env[1]/ (X_env[1]+ 0.001);
 
-        /*delta_k_e = k_e - k_e_last;
-        delta_k_e = std::max(-max_k_e, std::min(delta_k_e, max_k_e));
-        k_e = k_e_last + delta_k_e;
-        k_e_last = k_e; //avoid great change in k_e */
+        */
 
 
         k_e = error.head(3).norm();
@@ -268,9 +265,6 @@ CallbackReturn HybridController::on_configure(const rclcpp_lifecycle::State& /*p
 
 
 CallbackReturn HybridController::on_activate(
-  
-
-
   const rclcpp_lifecycle::State& /*previous_state*/) {
   franka_robot_model_->assign_loaned_state_interfaces(state_interfaces_);
 
@@ -471,7 +465,7 @@ if (virtual_error_quat.norm() > 1e-6) {
   switch (mode_)
   {
   case 1:
-
+    {
     if(counter_ == 0){
       n_current = n;
     } //make sure that within every loop the n is constant
@@ -501,7 +495,7 @@ if (virtual_error_quat.norm() > 1e-6) {
 
         smooth_adm_imp = 0;
       } 
-      Eigen::Matrix<double, 6, 1> F_impedance_current = -1 * (D * (jacobian * dq_) + K /*K_imp*/ * error);
+      F_impedance_current = -1 * (D * (jacobian * dq_) + K /*K_imp*/ * error);
       //F_impedance = (1 - n_current) * F_impedance_current + n_current * F_impedance_last; 
       desired_F = F_impedance_current; //desired_F for controlling the settling time, no impact on output
       //double blend_weight = 0.5 * (1 - cos(n_current * M_PI));
@@ -557,7 +551,7 @@ if (virtual_error_quat.norm() > 1e-6) {
        }
          
       
-      Eigen::Matrix<double, 6, 1> F_admittance_current = - Kp * error_pd - Kd * w_last;
+      F_admittance_current  = - Kp * error_pd - Kd * w_last;
       
       //F_impedance = n_current * F_impedance_current + (1 - n_current) * F_impedance_last;
       desired_F = F_admittance_current;
@@ -580,11 +574,11 @@ if (virtual_error_quat.norm() > 1e-6) {
     //F_output.tail(3) = Eigen::Vector3d(0, 0, 0);//test
 
 
-    
+    } 
   break;
 
   case 2: //schmitt trigger
-
+    {
     if(schmitt_adm == true){
       Eigen::Matrix<double, 6, 1> F_admittance_current = - Kp * error_pd - Kd * w_last;
       desired_F = F_admittance_current;
@@ -602,25 +596,27 @@ if (virtual_error_quat.norm() > 1e-6) {
       F_last = F_output;
       flag_imp = true;
     }
-
+    }
   break;
 
   case 3:{
 
-      Eigen::Matrix<double, 6, 1> F_impedance_current = -1 * (D * (jacobian * dq_) + K /*K_imp*/ * error); //imp 
+      F_impedance_current = -1 * (D * (jacobian * dq_) + K /*K_imp*/ * error); //imp 
       desired_F = F_impedance_current; //desired_F for controlling the settling time, no impact on output
-      double blend_weight = 0.9;
-      F_output = blend_weight * F_impedance_current + (1 - blend_weight) * F_last;
+      //double blend_weight = 0.9;
+      //F_output = blend_weight * F_impedance_current + (1 - blend_weight) * F_last;
+      F_output = F_impedance_current;
       F_last = F_output;
   }
   break;
 
   case 4:
   {
-      Eigen::Matrix<double, 6, 1> F_admittance_current = - Kp * error_pd - Kd * w; //adm
+      F_admittance_current = - Kp * error_pd - Kd * w; //adm
       desired_F = F_admittance_current;
-      double blend_weight = 0.9;
-      F_output = blend_weight * F_admittance_current + (1 - blend_weight) * F_last;
+      //double blend_weight = 0.9;
+      //F_output = blend_weight * F_admittance_current + (1 - blend_weight) * F_last;
+      F_output = F_admittance_current;
       F_last = F_output;
   }
   break;
@@ -629,7 +625,7 @@ if (virtual_error_quat.norm() > 1e-6) {
     break;
   }
 
-   
+  /* 
   write_to_file("ke_data.txt", k_e);
   write_to_file("n.txt", n);
   write_to_file("output_x.txt", F_output[0]);
@@ -642,16 +638,27 @@ if (virtual_error_quat.norm() > 1e-6) {
   write_to_file("error_at_z.txt", error[2]);
   write_to_file("position_x.txt", position[0]);
   write_to_file("position_y.txt", position[1]);
-  write_to_file("position_z.txt", position[2]);
+  write_to_file("position_z.txt", position[2]); //
   write_to_file("desired_x.txt", position_d_[0]);
   write_to_file("desired_y.txt", position_d_[1]);
   write_to_file("desired_z.txt", position_d_[2]);
   write_to_file("external_Force_x.txt", O_F_ext_hat_K_M[0]);
   write_to_file("external_Force_y.txt", O_F_ext_hat_K_M[1]);
   write_to_file("external_Force_z.txt", O_F_ext_hat_K_M[2]);
-  write_to_file("position_d_target_0_.txt", position_d_target_[0]);
+  write_to_file("position_d_target_x_.txt", position_d_target_[0]);
+  write_to_file("position_d_target_y_.txt", position_d_target_[1]);
+  write_to_file("position_d_target_z_.txt", position_d_target_[2]); //
   write_to_file("error_norm.txt", error.head(3).norm());
-
+  */
+  write_to_file("position_x.txt", position[0]);
+  write_to_file("position_y.txt", position[1]);
+  write_to_file("position_z.txt", position[2]); //
+  write_to_file("position_d_target_x_.txt", position_d_target_[0]);
+  write_to_file("position_d_target_y_.txt", position_d_target_[1]);
+  write_to_file("position_d_target_z_.txt", position_d_target_[2]); //
+  write_to_file("output_x.txt", F_output[0]);
+  write_to_file("output_y.txt", F_output[1]);
+  write_to_file("output_z.txt", F_output[2]);
 
 
 
